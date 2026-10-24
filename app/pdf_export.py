@@ -69,6 +69,10 @@ def generiere_audit_report(config: dict, pruefungen: list, jahr: int) -> str:
     def _cell(text: str) -> Paragraph:
         return Paragraph(_esc(text), cell_style)
 
+    def _monitor_cell(monitor: str, bildschirm: str | None) -> Paragraph:
+        zusatz = f'<br/><font size="6.5" color="#86868B">an {_esc(bildschirm)}</font>' if bildschirm else ""
+        return Paragraph(_esc(monitor) + zusatz, cell_style)
+
     def _ergebnis_cell(ergebnis: str) -> Paragraph:
         # Farbe/Fett direkt im Paragraph — TableStyle-TEXTCOLOR greift bei Paragraphen nicht
         farbe = "#1a6b2e" if ergebnis == "BESTANDEN" else "#8b1a1a"
@@ -100,7 +104,7 @@ def generiere_audit_report(config: dict, pruefungen: list, jahr: int) -> str:
             nicht_bestanden_count += 1
         table_data.append([
             _cell(p["zeitstempel"][:16].replace("T", " ")),
-            _cell(p["monitor"]),
+            _monitor_cell(p["monitor"], p.get("bildschirm")),
             _cell(p["testbild"]),
             _cell(p["pruefer"]),
             _ergebnis_cell(ergebnis),

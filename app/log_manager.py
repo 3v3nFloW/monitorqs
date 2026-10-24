@@ -33,10 +33,13 @@ def init_db():
         # Migration: Einzelkriterien (JSON-Liste) der Konstanzprüfung nach BAG-Wegleitung Tabelle C
         if "kriterien" not in cols:
             conn.execute("ALTER TABLE pruefungen ADD COLUMN kriterien TEXT")
+        # Migration: an welchem Bildschirm tatsächlich geprüft wurde (Name + Pixel), fürs Audit
+        if "bildschirm" not in cols:
+            conn.execute("ALTER TABLE pruefungen ADD COLUMN bildschirm TEXT")
 
 
 def log_pruefung(monitor: str, testbild: str, pruefer: str, ergebnis: str, kommentar: str = "",
-                 kriterien: list | None = None):
+                 kriterien: list | None = None, bildschirm: str = ""):
     zeitstempel = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     kriterien_json = None
     if kriterien:
@@ -47,9 +50,9 @@ def log_pruefung(monitor: str, testbild: str, pruefer: str, ergebnis: str, komme
         )
     with _get_conn() as conn:
         conn.execute(
-            "INSERT INTO pruefungen (zeitstempel, monitor, testbild, pruefer, ergebnis, kommentar, kriterien) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (zeitstempel, monitor, testbild, pruefer, ergebnis, kommentar, kriterien_json)
+            "INSERT INTO pruefungen (zeitstempel, monitor, testbild, pruefer, ergebnis, kommentar, kriterien, bildschirm) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (zeitstempel, monitor, testbild, pruefer, ergebnis, kommentar, kriterien_json, bildschirm or None)
         )
     return zeitstempel
 

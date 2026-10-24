@@ -50,8 +50,8 @@ app = BUNDLE(
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': True,
-        'CFBundleShortVersionString': '3.2.0',
-        'CFBundleVersion': '3.2.0',
+        'CFBundleShortVersionString': '3.2.1',
+        'CFBundleVersion': '3.2.1',
         'NSHumanReadableCopyright': '© 2026 Kappa1-VRS GmbH · GPL-3.0',
     },
 )

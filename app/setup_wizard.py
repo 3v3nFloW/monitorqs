@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QGuiApplication
 from .config_manager import save_config, save_monitors, load_monitors
+from .bildschirme import beschreibe, kennung, zuordnung
 from .kriterien import RAUMKLASSEN
 
 _STYLE = """
@@ -30,13 +31,13 @@ _BTN = """
 """
 
 
+def _als_monitor(b: dict, n: int) -> dict:
+    return {"name": b["name"] or f"Monitor {n}", "aufloesung": f"{b['px'][0]}x{b['px'][1]}", "kennung": kennung(b)}
+
+
 def erkannte_monitore() -> list:
-    """Vorschlag beim Erststart: angeschlossene Bildschirme mit ihrer Panelauflösung."""
-    monitore = []
-    for s in QGuiApplication.screens():
-        geo, dpr = s.geometry(), s.devicePixelRatio()
-        monitore.append({"name": s.name() or f"Monitor {len(monitore) + 1}", "aufloesung": f"{round(geo.width() * dpr)}x{round(geo.height() * dpr)}"})
-    return monitore
+    """Vorschlag beim Erststart: angeschlossene Bildschirme mit Panelauflösung und Kennung."""
+    return [_als_monitor(b, n) for n, b in enumerate(beschreibe(QGuiApplication.screens()), 1)]
 
 
 class MonitorListWidget(QWidget):
@@ -47,16 +48,36 @@ class MonitorListWidget(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(8, 8, 8, 8)
         self._layout.setSpacing(6)
-        for m in monitors:
-            self._add_row(m["name"], m["aufloesung"], m.get("raumklasse", ""))
+        btn_row = QHBoxLayout()
         self._add_btn = QPushButton("+ Monitor hinzufügen")
         self._add_btn.setStyleSheet(_BTN.format(
             bg="#F2F2F7", fg="#007AFF", hov="#E3F0FF", pad="8px 16px", fs=13
         ))
         self._add_btn.clicked.connect(lambda: self._add_row("", "", ""))
-        self._layout.addWidget(self._add_btn)
+        erkennen_btn = QPushButton("+ Angeschlossene Bildschirme")
+        erkennen_btn.setToolTip("Fügt jeden angeschlossenen Bildschirm hinzu, der noch keinem Monitor zugeordnet ist")
+        erkennen_btn.setStyleSheet(self._add_btn.styleSheet())
+        erkennen_btn.clicked.connect(self._angeschlossene_hinzufuegen)
+        btn_row.addWidget(self._add_btn)
+        btn_row.addWidget(erkennen_btn)
+        btn_row.addStretch()
+        self._layout.addLayout(btn_row)
+        # Zeilen kommen vor die Knopfzeile, in der gespeicherten Reihenfolge
+        for m in monitors:
+            self._add_row(m["name"], m["aufloesung"], m.get("raumklasse", ""), m.get("kennung"))
 
-    def _add_row(self, name: str, aufloesung: str, raumklasse: str = ""):
+    def _angeschlossene_hinzufuegen(self):
+        bildschirme = beschreibe(QGuiApplication.screens())
+        belegt = set(zuordnung(self.get_monitors(), bildschirme).values())
+        neu = [(n, b) for n, b in enumerate(bildschirme, 1) if n - 1 not in belegt]
+        if not neu:
+            QMessageBox.information(self, "Nichts hinzuzufügen",
+                                    "Alle angeschlossenen Bildschirme sind bereits einem Monitor zugeordnet.")
+        for n, b in neu:
+            m = _als_monitor(b, n)
+            self._add_row(m["name"], m["aufloesung"], "", m["kennung"])
+
+    def _add_row(self, name: str, aufloesung: str, raumklasse: str = "", kennung_: dict | None = None):
         row = QWidget()
         row.setStyleSheet("background: transparent;")
         hl = QHBoxLayout(row)
@@ -64,6 +85,8 @@ class MonitorListWidget(QWidget):
         hl.setSpacing(8)
         name_edit = QLineEdit(name)
         name_edit.setPlaceholderText('z. B. Samsung 43"')
+        if kennung_:
+            name_edit.setToolTip(f"Wird wiedererkannt an: {kennung_.get('name') or 'Gerätekennung'}")
         name_edit.setStyleSheet(
             "background: #F5F5F7; border: 1px solid #E5E5EA; border-radius: 8px; "
             "padding: 6px 10px; font-size: 13px;"
@@ -93,7 +116,7 @@ class MonitorListWidget(QWidget):
         hl.addWidget(aufl_edit)
         hl.addWidget(rk_combo)
         hl.addWidget(del_btn)
-        self._rows.append((row, name_edit, aufl_edit, rk_combo))
+        self._rows.append((row, name_edit, aufl_edit, rk_combo, kennung_))
         self._layout.insertWidget(self._layout.count() - 1, row)
 
     def _remove_row(self, row_widget):
@@ -102,11 +125,13 @@ class MonitorListWidget(QWidget):
 
     def get_monitors(self) -> list:
         result = []
-        for _, name_edit, aufl_edit, rk_combo in self._rows:
+        for _, name_edit, aufl_edit, rk_combo, kennung_ in self._rows:
             name = name_edit.text().strip()
             if name:
-                result.append({"name": name, "aufloesung": aufl_edit.text().strip(),
-                               "raumklasse": rk_combo.currentData() or ""})
+                m = {"name": name, "aufloesung": aufl_edit.text().strip(), "raumklasse": rk_combo.currentData() or ""}
+                if kennung_:
+                    m["kennung"] = kennung_
+                result.append(m)
         return result
 
 

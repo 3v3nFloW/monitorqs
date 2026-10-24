@@ -7,7 +7,8 @@ from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QAction, QGuiApplication
 from PyQt6.QtWidgets import QProgressDialog
 
-from .config_manager import load_config, load_monitors
+from .config_manager import load_config, load_monitors, save_monitors
+from .bildschirme import pixelgroesse, beschreibe, zuordnung, abweichungen, kennung
 from .log_manager import init_db, get_pruefungen
 from .image_loader import list_testbilder, load_as_qpixmap, waehle_oiq, un80_qpixmap
 from .kriterien import oiq_kriterien, un80_kriterien
@@ -70,24 +71,6 @@ _BTN = """
 """
 
 
-def _screen_pixel_size(screen) -> tuple[int, int]:
-    """Physische (Geräte-)Pixelmaße eines Screens: logische Größe × devicePixelRatio."""
-    geo = screen.geometry()
-    dpr = screen.devicePixelRatio()
-    return round(geo.width() * dpr), round(geo.height() * dpr)
-
-
-def _parse_aufloesung(text: str) -> tuple[int, int] | None:
-    """'5120x1440' / '5120×2880' → (5120, 1440); None wenn nicht parsebar."""
-    if not text:
-        return None
-    norm = text.lower().replace("×", "x").replace(" ", "")
-    parts = norm.split("x")
-    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-        return int(parts[0]), int(parts[1])
-    return None
-
-
 class _TestbilderLaden(QThread):
     fortschritt = pyqtSignal(str, int)
     fertig = pyqtSignal(str)  # leer = ok, sonst Fehlermeldung
@@ -108,6 +91,10 @@ class MainWindow(QMainWindow):
         self._display_win = None
         self._aktueller_monitor = None
         self._aktuelles_bild = None
+        self._aktueller_bildschirm = ""
+        self._kennung_lernen = None
+        self._zu = {}
+        self._beobachtet = []
         self._setup_ui()
         self._setup_menu()
         self._lade_log_tabelle()
@@ -183,17 +170,29 @@ class MainWindow(QMainWindow):
         screen_row.addStretch()
         pruef_layout.addLayout(screen_row)
 
+        # Erkennung: welcher erfasste Monitor an welchem Bildschirm hängt
+        self._erkennung_lbl = QLabel("")
+        self._erkennung_lbl.setWordWrap(True)
+        pruef_layout.addWidget(self._erkennung_lbl)
+
         # Welche TG18-OIQ-Variante 1:1 auf das gewählte Panel passt
         self._oiq_info = QLabel("")
         self._oiq_info.setStyleSheet("color: #86868B; font-size: 12px;")
         pruef_layout.addWidget(self._oiq_info)
-        self._screen_combo.currentIndexChanged.connect(self._aktualisiere_oiq_info)
         self._bild_combo.currentIndexChanged.connect(self._aktualisiere_oiq_info)
 
-        # Bei Monitorwechsel automatisch den Screen mit passender Auflösung vorwählen
-        self._monitor_combo.currentIndexChanged.connect(self._auto_select_screen)
-        self._auto_select_screen()
-        self._aktualisiere_oiq_info()
+        # Monitor ↔ Bildschirm wählen sich gegenseitig vor; an-/abstecken wird live nachgeführt
+        self._monitor_combo.currentIndexChanged.connect(self._monitor_gewaehlt)
+        self._screen_combo.currentIndexChanged.connect(self._bildschirm_gewaehlt)
+        self._neu_timer = QTimer(self)
+        self._neu_timer.setSingleShot(True)
+        self._neu_timer.setInterval(500)
+        self._neu_timer.timeout.connect(self._bildschirme_neu)
+        app = QGuiApplication.instance()
+        app.screenAdded.connect(lambda _s: self._neu_timer.start())
+        app.screenRemoved.connect(lambda _s: self._neu_timer.start())
+        app.primaryScreenChanged.connect(lambda _s: self._neu_timer.start())
+        self._erkennen()
 
         self._start_btn = QPushButton("Prüfung starten")
         self._start_btn.setStyleSheet(_BTN.format(
@@ -309,38 +308,103 @@ class MainWindow(QMainWindow):
 
     def _lade_monitore(self):
         self._monitors = load_monitors()
+        self._monitor_combo.blockSignals(True)
         self._monitor_combo.clear()
         for m in self._monitors:
             self._monitor_combo.addItem(m["name"])
+        self._monitor_combo.blockSignals(False)
 
     def _lade_bildschirme(self):
         self._screens = QGuiApplication.screens()
-        self._screen_combo.clear()
+        self._bildschirme = beschreibe(self._screens)
+        self._screen_labels = []
         primary = QGuiApplication.primaryScreen()
-        for s in self._screens:
-            pw, ph = _screen_pixel_size(s)
+        for s, b in zip(self._screens, self._bildschirme):
+            pw, ph = b["px"]
             dpr = s.devicePixelRatio()
-            label = f"{s.name()} — {pw}×{ph} px"
+            label = f"{b['name']} — {pw}×{ph} px"
             if abs(dpr - 1.0) > 0.01:
                 label += f" (@{dpr:.2g}×)"
             if s is primary:
                 label += "  · primär"
-            self._screen_combo.addItem(label)
+            self._screen_labels.append(label)
+            # Auflösung umgestellt (z. B. Retina-Skalierung) → neu erkennen
+            if s not in self._beobachtet:
+                s.geometryChanged.connect(lambda _g: self._neu_timer.start())
+                self._beobachtet.append(s)
+        self._screen_combo.blockSignals(True)
+        self._screen_combo.clear()
+        self._screen_combo.addItems(self._screen_labels)
+        self._screen_combo.blockSignals(False)
 
-    def _auto_select_screen(self):
-        """Screen vorwählen, dessen Panelauflösung zur gewählten Monitor-Auflösung passt."""
-        if not getattr(self, "_screens", None) or not getattr(self, "_monitors", None):
-            return
-        idx = self._monitor_combo.currentIndex()
-        if not (0 <= idx < len(self._monitors)):
-            return
-        ziel = _parse_aufloesung(self._monitors[idx].get("aufloesung", ""))
-        if ziel is None:
-            return
-        for i, s in enumerate(self._screens):
-            if _screen_pixel_size(s) == ziel:
-                self._screen_combo.setCurrentIndex(i)
-                return
+    def _bildschirme_neu(self):
+        self._lade_bildschirme()
+        self._erkennen()
+
+    def _erkennen(self):
+        """Erfasste Monitore den angeschlossenen Bildschirmen zuordnen und das passende Paar vorwählen."""
+        self._zu = zuordnung(self._monitors, self._bildschirme)
+        an = {bi: mi for mi, bi in self._zu.items()}
+        for mi, m in enumerate(self._monitors):
+            self._monitor_combo.setItemText(mi, m["name"] if mi in self._zu else f"{m['name']}  · nicht angeschlossen")
+        for bi, label in enumerate(self._screen_labels):
+            zusatz = f"  → {self._monitors[an[bi]]['name']}" if bi in an else "  · nicht erfasst"
+            self._screen_combo.setItemText(bi, label + zusatz)
+        mi = self._monitor_combo.currentIndex()
+        if mi not in self._zu and self._zu:
+            mi = min(self._zu)
+        self._monitor_combo.blockSignals(True)
+        self._monitor_combo.setCurrentIndex(mi)
+        self._monitor_combo.blockSignals(False)
+        self._monitor_gewaehlt()
+
+    def _monitor_gewaehlt(self):
+        bi = self._zu.get(self._monitor_combo.currentIndex())
+        if bi is not None:
+            self._screen_combo.blockSignals(True)
+            self._screen_combo.setCurrentIndex(bi)
+            self._screen_combo.blockSignals(False)
+        self._aktualisiere_erkennung()
+        self._aktualisiere_oiq_info()
+
+    def _bildschirm_gewaehlt(self):
+        bi = self._screen_combo.currentIndex()
+        mi = next((m for m, b in self._zu.items() if b == bi), None)
+        if mi is not None and mi != self._monitor_combo.currentIndex():
+            self._monitor_combo.blockSignals(True)
+            self._monitor_combo.setCurrentIndex(mi)
+            self._monitor_combo.blockSignals(False)
+        self._aktualisiere_erkennung()
+        self._aktualisiere_oiq_info()
+
+    def _abweichungen(self) -> list[str]:
+        """Warum der gewählte Bildschirm nicht zum gewählten Monitor passt; [] = passt."""
+        mi, bi = self._monitor_combo.currentIndex(), self._screen_combo.currentIndex()
+        if not (0 <= mi < len(self._monitors) and 0 <= bi < len(self._bildschirme)):
+            return []
+        gruende = abweichungen(self._monitors[mi], self._bildschirme[bi])
+        andere = next((m for m, b in self._zu.items() if b == bi and m != mi), None)
+        if andere is not None:
+            gruende.insert(0, f"Dieser Bildschirm ist als «{self._monitors[andere]['name']}» erfasst.")
+        return gruende
+
+    def _aktualisiere_erkennung(self):
+        mi = self._monitor_combo.currentIndex()
+        if not (0 <= mi < len(self._monitors)):
+            text, farbe = "Noch kein Monitor erfasst — bitte unter Einstellungen › Monitore eintragen.", "#8b6914"
+        else:
+            name = self._monitors[mi]["name"]
+            gruende = self._abweichungen()
+            if mi not in self._zu:
+                text = f"⚠  «{name}» ist nicht angeschlossen. " + " ".join(gruende)
+                farbe = "#8b6914"
+            elif gruende:
+                text, farbe = "⚠  " + " ".join(gruende), "#8b6914"
+            else:
+                b = self._bildschirme[self._screen_combo.currentIndex()]
+                text, farbe = f"✓  «{name}» erkannt an «{b['name']}».", "#1a6b2e"
+        self._erkennung_lbl.setText(text)
+        self._erkennung_lbl.setStyleSheet(f"color: {farbe}; font-size: 12px;")
 
     def _ziel_screen(self):
         screen_idx = self._screen_combo.currentIndex()
@@ -357,7 +421,7 @@ class MainWindow(QMainWindow):
         if not (0 <= idx < len(self._testbilder)) or self._testbilder[idx]["typ"] not in ("bag", "oiq"):
             self._oiq_info.setText("")
             return
-        pw, ph = _screen_pixel_size(self._ziel_screen())
+        pw, ph = pixelgroesse(self._ziel_screen())
         oiq = waehle_oiq(pw, ph)
         if oiq is None:
             self._oiq_info.setText(f"⚠  Keine TG18-OIQ-Variante passt 1:1 auf {pw}×{ph} px.")
@@ -370,7 +434,10 @@ class MainWindow(QMainWindow):
             self._table.setRowCount(len(rows))
             for i, row in enumerate(reversed(rows)):
                 self._table.setItem(i, 0, QTableWidgetItem(row["zeitstempel"]))
-                self._table.setItem(i, 1, QTableWidgetItem(row["monitor"]))
+                monitor_item = QTableWidgetItem(row["monitor"])
+                if row.get("bildschirm"):
+                    monitor_item.setToolTip(f"Geprüft an: {row['bildschirm']}")
+                self._table.setItem(i, 1, monitor_item)
                 self._table.setItem(i, 2, QTableWidgetItem(row["testbild"]))
                 self._table.setItem(i, 3, QTableWidgetItem(row["pruefer"]))
                 ergebnis_item = QTableWidgetItem(row["ergebnis"])
@@ -393,11 +460,47 @@ class MainWindow(QMainWindow):
     def _pruefung_starten(self):
         if not self._testbilder:
             return
-        monitor_name = self._monitor_combo.currentText()
+        mi = self._monitor_combo.currentIndex()
+        if not (0 <= mi < len(self._monitors)):
+            QMessageBox.information(self, "Kein Monitor", "Bitte zuerst unter Einstellungen › Monitore einen Monitor erfassen.")
+            return
+        monitor = self._monitors[mi]
+        monitor_name = monitor["name"]
+        bi = self._screen_combo.currentIndex()
+        bildschirm = self._bildschirme[bi] if 0 <= bi < len(self._bildschirme) else None
+        gruende = self._abweichungen()
+        if gruende:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Monitor und Bildschirm passen nicht zusammen")
+            box.setText(f"Geprüft wird «{monitor_name}», angezeigt würde das Testbild aber auf "
+                        f"«{bildschirm['name'] if bildschirm else '?'}».")
+            richtig = self._zu.get(mi)
+            if richtig is None:
+                hinweis = (f"«{monitor_name}» wird an keinem angeschlossenen Bildschirm erkannt. Wurde er ersetzt, "
+                           "ihn unter Einstellungen › Monitore neu erfassen (nach einem Ersatz ist eine "
+                           "Abnahmeprüfung fällig).")
+            else:
+                hinweis = f"«{monitor_name}» ist an «{self._bildschirme[richtig]['name']}» angeschlossen."
+            box.setInformativeText("\n".join(gruende) + "\n\n" + hinweis)
+            wechseln = None
+            if richtig is not None and richtig != bi:
+                wechseln = box.addButton(f"Auf «{self._bildschirme[richtig]['name']}» prüfen",
+                                         QMessageBox.ButtonRole.AcceptRole)
+            trotzdem = box.addButton("Trotzdem hier prüfen", QMessageBox.ButtonRole.DestructiveRole)
+            abbrechen = box.addButton("Abbrechen", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(wechseln or abbrechen)
+            box.setEscapeButton(abbrechen)
+            box.exec()
+            if wechseln is not None and box.clickedButton() is wechseln:
+                self._screen_combo.setCurrentIndex(richtig)
+                return self._pruefung_starten()
+            if box.clickedButton() is not trotzdem:
+                return
         bild_idx = self._bild_combo.currentIndex()
         bild_info = self._testbilder[bild_idx]
         target_screen = self._ziel_screen()
-        pw, ph = _screen_pixel_size(target_screen)
+        pw, ph = pixelgroesse(target_screen)
         typ = bild_info["typ"]
         try:
             schritte = []
@@ -426,6 +529,14 @@ class MainWindow(QMainWindow):
             return
         self._aktueller_monitor = monitor_name
         self._aktuelles_bild = testbild_name
+        self._aktueller_bildschirm = ""
+        self._kennung_lernen = None
+        if bildschirm:
+            w, h = bildschirm["px"]
+            self._aktueller_bildschirm = f"{bildschirm['name']}, {w}×{h} px" + (" (Abweichung bestätigt)" if gruende else "")
+            # Passendes Paar ohne gespeicherte Kennung → nach der Prüfung merken, ab dann eindeutig
+            if not gruende and not monitor.get("kennung"):
+                self._kennung_lernen = (monitor_name, kennung(bildschirm))
         self._display_win = DisplayWindow(schritte, screen=target_screen)
         self._display_win.pruefung_abgeschlossen.connect(self._pruefung_abgeschlossen)
         self._display_win.show()
@@ -451,7 +562,9 @@ class MainWindow(QMainWindow):
                     ergebnis="BESTANDEN" if bestanden else "NICHT BESTANDEN",
                     kommentar=dlg.get_kommentar(),
                     kriterien=kriterien,
+                    bildschirm=self._aktueller_bildschirm,
                 )
+                self._kennung_merken()
                 self._lade_log_tabelle()
                 color = "#34C759" if bestanden else "#FF3B30"
                 self._status_lbl.setText(
@@ -473,6 +586,19 @@ class MainWindow(QMainWindow):
             (log_dir / "error.log").write_text(err)
             QMessageBox.critical(self, "Fehler", f"Unerwarteter Fehler:\n\n{err}")
 
+    def _kennung_merken(self):
+        if not self._kennung_lernen:
+            return
+        name, k = self._kennung_lernen
+        self._kennung_lernen = None
+        monitore = load_monitors()
+        treffer = [m for m in monitore if m["name"] == name and not m.get("kennung")]
+        if len(treffer) == 1:
+            treffer[0]["kennung"] = k
+            save_monitors(monitore)
+            self._lade_monitore()
+            self._erkennen()
+
     def _audit_report(self):
         dlg = AuditDialog(self._config, self)
         dlg.exec()
@@ -483,6 +609,7 @@ class MainWindow(QMainWindow):
             if dlg.exec() == SettingsDialog.DialogCode.Accepted:
                 self._config = load_config()
                 self._lade_monitore()
+                self._erkennen()
                 self._praxis_lbl.setText(self._config.get("praxis_name", ""))
         except Exception as exc:
             QMessageBox.critical(self, "Fehler", str(exc))

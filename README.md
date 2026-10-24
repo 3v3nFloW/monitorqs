@@ -15,8 +15,15 @@ nach der **BAG-Wegleitung «Befundmonitore» V3 (20.03.2025), Tabelle C** durch 
 3. Bestanden nur, wenn alle sieben Kriterien erfüllt sind. Ergebnis, prüfende Person und Kommentar landen im
    Logbuch; der **Audit-Report (PDF)** listet je Prüfung jedes Einzelkriterium — fürs Anlagenbuch.
 
-Dazu: mehrere Monitore mit Auflösung und Raumklasse, automatische Wahl des passenden Bildschirms,
-wöchentliche Erinnerung (Donnerstag 09:00, nur wenn in der Woche noch nicht geprüft), TG18-QC als Einzelbild.
+Dazu: mehrere Monitore mit Auflösung und Raumklasse, wöchentliche Erinnerung (Donnerstag 09:00, nur wenn in
+der Woche noch nicht geprüft), TG18-QC als Einzelbild.
+
+**Erkennung bei mehreren Bildschirmen:** MonitorQS ordnet jeden erfassten Monitor dem angeschlossenen Bildschirm
+zu, an dem er hängt — über Hersteller-, Modell- und Seriennummer des Panels, so dass auch zwei baugleiche Monitore
+auseinandergehalten werden. Monitor und Bildschirm wählen sich gegenseitig vor; An- und Abstecken wird laufend
+nachgeführt. Passen gewählter Monitor und Bildschirm nicht zusammen (falsches Panel, andere Auflösung, Monitor
+nicht angeschlossen), warnt die App vor dem Start. Das Logbuch und der Audit-Report halten fest, an welchem
+Bildschirm tatsächlich geprüft wurde.
 `H` blendet während der Prüfung die Leisten aus.
 
 ## Installation
@@ -45,7 +52,7 @@ Alles bleibt auf dem Mac, nichts wird übertragen (einzige Verbindung: der einma
 
 | Was | Wo |
 |---|---|
-| Einstellungen, Monitore, Logbuch (SQLite), Testmuster | `~/Library/Application Support/MonitorQS/` |
+| Einstellungen, Monitore (inkl. Panel-Kennung), Logbuch (SQLite), Testmuster | `~/Library/Application Support/MonitorQS/` |
 | Audit-Reports | `~/Documents/MonitorQS/Berichte/` |
 | Erinnerung | `~/Library/LaunchAgents/vet.kappa1.monitorqs.wochenreminder.plist` |
 
@@ -79,7 +86,9 @@ MonitorQS is a macOS app for the **visual constancy test of diagnostic displays*
 Federal Office of Public Health (FOPH/BAG) guideline for diagnostic monitors (V3, table C). It shows the
 AAPM **TG18-OIQ** pattern pixel-for-pixel on the selected panel (largest size that fits, Retina-aware) and a
 full-screen **TG18-UN80** field, walks through the seven pass/fail criteria, keeps a local logbook and
-exports a per-criterion **audit PDF**. Weekly reminder included.
+exports a per-criterion **audit PDF**. With several displays attached it recognises which configured monitor
+is on which panel (vendor/model/serial number), warns before a test on the wrong one and records the panel
+actually used. Weekly reminder included.
 
 The TG18 patterns are © AAPM and are **not bundled**: on first launch the app downloads them unmodified from
 Duke RAI Labs (≈ 1 MB), verifies their SHA-256 and stores them with the citation above. Nothing else ever
